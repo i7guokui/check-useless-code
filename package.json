@@ -1,0 +1,23 @@
+{
+  "name": "check-useless-code",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "bin": {
+    "check-useless-code": "bin/check-useless-code.js"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "fs-extra": "^11.1.1",
+    "glob": "^10.3.5",
+    "typescript": "^5.2.2"
+  },
+  "devDependencies": {
+    "@types/fs-extra": "^11.0.2"
+  }
+}
