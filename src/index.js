@@ -121,10 +121,16 @@ async function handleFile(filePath) {
             exportsSet.add(it.name.escapedText)
           })
         }
-      } else if (ts.isVariableStatement(node)) { // export const a = 1
+      } else if (ts.isVariableStatement(node)) {
         if (node.modifiers?.some(it => it.kind === ts.SyntaxKind.ExportKeyword)) {
           node.declarationList.declarations.forEach(it => {
-            exportsSet.add(it.name.escapedText)
+            if (it.name.kind === ts.SyntaxKind.ObjectBindingPattern) { // export const { a } = info
+              it.name.elements.forEach(bindEl => {
+                exportsSet.add(bindEl.name.escapedText)
+              })
+            } else if (it.name.escapedText) { // export const a = 1
+              exportsSet.add(it.name.escapedText)
+            }
           })
         }
       } else if (ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node) || ts.isEnumDeclaration(node) || ts.isClassDeclaration(node) || ts.isFunctionDeclaration(node)) { // export interface | type | enum | class | function
