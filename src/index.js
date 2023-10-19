@@ -41,7 +41,7 @@ const allFiles = globSync(path.resolve(cwd, 'src/**/*')).filter(p => !fs.statSyn
 const depsMap = allFiles.reduce((acc, cur) => {
   acc.set(cur, {
     // 自身 export 的内容
-    exports: undefined,
+    exports: new Set(),
     // 被其他模块 import 的内容
     imports: new Set(),
   })
@@ -58,88 +58,88 @@ const astMap = new Map()
 // 单个文件处理
 async function handleFile(filePath) {
   let ast = astMap.get(filePath)
-  if (!ast) {
-    const contents = await fs.readFile(filePath, { encoding: 'utf-8' })
-    ast = ts.createSourceFile(filePath, contents, ts.ScriptTarget.Latest)
-    astMap.set(filePath, ast)
-    const exportsSet = new Set()
-    for (const node of ast.statements) {
-      let importPath = '', replaced = false
-      if (node.moduleSpecifier) {
-        [importPath, replaced] = replaceAlias(node.moduleSpecifier.text)
-        if (replaced) { // 匹配别名
-          importPath = resolve(path.resolve(cwd, importPath))
-        } else if (importPath.startsWith('.')) { // 匹配相对路径
-          importPath = resolve(path.resolve(path.dirname(filePath), importPath))
-        } else { // 第三方库
-          continue
-        }
-        if (!extReg.test(importPath)) { // 非 ts tsx 不处理
-          continue
-        }
-        // 记录被 import 的文件
-        deps.add(importPath)
-        await handleFile(importPath, filePath)
+  if (ast) {
+    return
+  }
+  const contents = await fs.readFile(filePath, { encoding: 'utf-8' })
+  ast = ts.createSourceFile(filePath, contents, ts.ScriptTarget.Latest)
+  astMap.set(filePath, ast)
+  const exportsSet = depsMap.get(filePath).exports
+  for (const node of ast.statements) {
+    let importPath = '', replaced = false
+    if (node.moduleSpecifier) { // import 语句
+      [importPath, replaced] = replaceAlias(node.moduleSpecifier.text)
+      if (replaced) { // 匹配别名
+        importPath = resolve(path.resolve(cwd, importPath))
+      } else if (importPath.startsWith('.')) { // 匹配相对路径
+        importPath = resolve(path.resolve(path.dirname(filePath), importPath))
+      } else { // 第三方库
+        continue
       }
-      const ips = depsMap.get(importPath)?.imports
-      if (ts.isImportDeclaration(node)) {
-        if (node.importClause?.namedBindings?.name) {
-          // import * as B from 'react'
-          // 当做全部导出都被使用
-          depsMap.get(importPath).imports = depsMap.get(importPath).exports
-        } else {
-          // import B from 'react'
-          if (node.importClause.name) {
-            ips.add('default')
-          }
-          node.importClause?.namedBindings?.elements?.forEach(it => {
-            // import { ReactNode, FC as FB } from 'react'
-            ips.add(it?.propertyName?.escapedText ?? it.name.escapedText)
-          })
+      if (!extReg.test(importPath)) { // 非 ts tsx 不处理
+        continue
+      }
+      // 记录被 import 的文件
+      deps.add(importPath)
+      await handleFile(importPath)
+    }
+    const ips = depsMap.get(importPath)?.imports
+    if (ts.isImportDeclaration(node)) {
+      if (node.importClause?.namedBindings?.name) {
+        // import * as B from 'react'
+        // 当做全部导出都被使用
+        depsMap.get(importPath).imports = depsMap.get(importPath).exports
+      } else {
+        // import B from 'react'
+        if (node.importClause.name) {
+          ips.add('default')
         }
-      } else if (ts.isExportAssignment(node)) { // export default A
-        exportsSet.add('default')
-      } else if (ts.isExportDeclaration(node)) {
-        if (node.moduleSpecifier) {
-          if (node.exportClause) {
-            // export { A, B as C } from './test'
-            node.exportClause?.elements?.forEach(it => {
-              ips.add(it.propertyName?.escapedText ?? it.name.escapedText)
-            })
-          } else {
-            // export * from './test'
-            depsMap.get(importPath)?.exports?.forEach(it => {
-              // import 文件的被导入记录中添加自身全部导出内容
-              ips.add(it)
-              // 当前文件的导出记录中添加 import 文件的全部导出内容
-              exportsSet.add(it)
-            })
-          }
-        } else {
-          // export { A, B as C }
+        node.importClause?.namedBindings?.elements?.forEach(it => {
+          // import { ReactNode, FC as FB } from 'react'
+          ips.add(it?.propertyName?.escapedText ?? it.name.escapedText)
+        })
+      }
+    } else if (ts.isExportAssignment(node)) { // export default A
+      exportsSet.add('default')
+    } else if (ts.isExportDeclaration(node)) {
+      if (node.moduleSpecifier) {
+        if (node.exportClause) {
+          // export { A, B as C } from './test'
           node.exportClause?.elements?.forEach(it => {
+            ips.add(it.propertyName?.escapedText ?? it.name.escapedText)
+          })
+        } else {
+          // export * from './test'
+          depsMap.get(importPath)?.exports?.forEach(it => {
+            // import 文件的被导入记录中添加自身全部导出内容
+            ips.add(it)
+            // 当前文件的导出记录中添加 import 文件的全部导出内容
+            exportsSet.add(it)
+          })
+        }
+      } else {
+        // export { A, B as C }
+        node.exportClause?.elements?.forEach(it => {
+          exportsSet.add(it.name.escapedText)
+        })
+      }
+    } else if (ts.isVariableStatement(node)) {
+      if (node.modifiers?.some(it => it.kind === ts.SyntaxKind.ExportKeyword)) {
+        node.declarationList.declarations.forEach(it => {
+          if (it.name.kind === ts.SyntaxKind.ObjectBindingPattern) { // export const { a } = info
+            it.name.elements.forEach(bindEl => {
+              exportsSet.add(bindEl.name.escapedText)
+            })
+          } else if (it.name.escapedText) { // export const a = 1
             exportsSet.add(it.name.escapedText)
-          })
-        }
-      } else if (ts.isVariableStatement(node)) {
-        if (node.modifiers?.some(it => it.kind === ts.SyntaxKind.ExportKeyword)) {
-          node.declarationList.declarations.forEach(it => {
-            if (it.name.kind === ts.SyntaxKind.ObjectBindingPattern) { // export const { a } = info
-              it.name.elements.forEach(bindEl => {
-                exportsSet.add(bindEl.name.escapedText)
-              })
-            } else if (it.name.escapedText) { // export const a = 1
-              exportsSet.add(it.name.escapedText)
-            }
-          })
-        }
-      } else if (ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node) || ts.isEnumDeclaration(node) || ts.isClassDeclaration(node) || ts.isFunctionDeclaration(node)) { // export interface | type | enum | class | function
-        if (node.modifiers?.some(it => it.kind === ts.SyntaxKind.ExportKeyword)) {
-          exportsSet.add(node.name.escapedText)
-        }
+          }
+        })
+      }
+    } else if (ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node) || ts.isEnumDeclaration(node) || ts.isClassDeclaration(node) || ts.isFunctionDeclaration(node)) { // export interface | type | enum | class | function
+      if (node.modifiers?.some(it => it.kind === ts.SyntaxKind.ExportKeyword)) {
+        exportsSet.add(node.name.escapedText)
       }
     }
-    depsMap.get(filePath).exports = exportsSet
   }
 }
 
@@ -161,10 +161,11 @@ start().then(() => {
     console.log('Useless files：')
     console.log(uselessFiles)
   }
+  // 查找被使用文件的无用导出，入口文件不检查
   const usedFiles = allFiles.filter(p => deps.has(p) && !entrySet.has(p))
   const uselessExports = usedFiles.reduce((acc, cur) => {
     const item = depsMap.get(cur)
-    const { exports = new Set(), imports } = item
+    const { exports, imports } = item
     if (exports.size !== imports.size) {
       const unused = []
       exports.forEach(item => {
